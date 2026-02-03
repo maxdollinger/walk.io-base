@@ -1,0 +1,266 @@
+name: build-base
+
+on:
+  workflow_dispatch:
+    inputs:
+      firecracker-version:
+        description: "Firecracker version (e.g. v1.14.1)"
+        required: false
+        default: "v1.14.1"
+        type: string
+      linux-tag:
+        description: "Linux kernel tag (e.g. v6.12.1, or leave empty for latest)"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  FC_VER: ${{ inputs.firecracker-version }}
+  LINUX_TAG: ${{ inputs.linux-tag }}
+  ARCH: x86_64
+
+jobs:
+  build-kernel:
+    runs-on: ubuntu-24.04
+    outputs:
+      kernel-tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: main
+
+      - name: Pick latest Linux tag
+        id: tag
+        run: |
+          set -euo pipefail
+          if [ -z "$LINUX_TAG" ]; then
+            TAG="$(./scripts/pick-latest-tag.sh)"
+          else
+            TAG="$LINUX_TAG"
+          fi
+          echo "targeting kernel-release: $TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential bc bison flex \
+            libelf-dev libssl-dev dwarves \
+            git jq coreutils
+
+      - name: Clone Linux at tag
+        run: |
+          git clone \
+            --depth 1 \
+            --branch "${{ steps.tag.outputs.tag }}" \
+            https://github.com/torvalds/linux.git linux
+
+      - name: Build kernel
+        run: |
+          ./scripts/build-kernel.sh \
+            --src ./linux \
+            --config ./configs/x86_64-pci.config \
+            --out ./out \
+            --jobs "$(nproc)"
+
+      - name: Upload kernel artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-artifacts
+          path: |
+            out/x86_64-vmlinux
+            out/x86_64-System.map
+            out/x86_64.config
+
+  build-rootfs:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: main
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ca-certificates curl tar util-linux e2fsprogs
+
+      - name: Build rootfs.ext4
+        run: |
+          ./scripts/build-rootfs.sh
+
+      - name: Verify rootfs
+        run: test -f ./rootfs.ext4
+
+      - name: Upload rootfs artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rootfs-artifact
+          path: rootfs.ext4
+
+  build-test-app:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: main
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ca-certificates curl tar util-linux e2fsprogs
+
+      - name: Build test devices (app + state)
+        run: |
+          ./scripts/build-test-app.sh
+
+      - name: Verify test artifacts
+        run: |
+          test -f ./app.ext4
+          test -f ./state.ext4
+
+      - name: Upload test app artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-app-artifacts
+          path: |
+            app.ext4
+            state.ext4
+
+  download-firecracker:
+    runs-on: ubuntu-24.04
+    outputs:
+      fc-binary: firecracker
+    steps:
+      - name: Download Firecracker
+        run: |
+          tmp="$(mktemp -d)"
+          cleanup() { rm -rf "$tmp"; }
+          trap cleanup EXIT
+
+          FC_URL="https://github.com/firecracker-microvm/firecracker/releases/download/${FC_VER}/firecracker-${FC_VER}-${ARCH}.tgz"
+
+          echo "Downloading Firecracker ${FC_VER} from ${FC_URL}"
+          curl -fsSL -o "$tmp/fc.tgz" "$FC_URL"
+          tar -xzf "$tmp/fc.tgz" -C "$tmp"
+
+          cp "$tmp/release-${FC_VER}-${ARCH}/firecracker-${FC_VER}-${ARCH}" firecracker
+
+
+          echo "Verifying Firecracker installation"
+          ./firecracker --version
+
+      - name: Upload Firecracker artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: firecracker-artifact
+          path: firecracker
+
+  test-integration:
+    runs-on: ubuntu-24.04
+    needs: [build-kernel, build-rootfs, build-test-app, download-firecracker]
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: main
+
+      - name: Verify KVM availability
+        run: |
+          if [ ! -e /dev/kvm ]; then
+            echo "::error::/dev/kvm not found. Firecracker requires KVM. Use a runner with nested virtualization."
+            exit 1
+          fi
+          sudo chmod 666 /dev/kvm || true
+          ls -l /dev/kvm
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ca-certificates curl tar util-linux e2fsprogs
+
+      - name: Download kernel artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: kernel-artifacts
+
+      - name: Download rootfs artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: rootfs-artifact
+
+      - name: Download test app artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: test-app-artifacts
+
+      - name: Download Firecracker artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: firecracker-artifact
+
+      - name: Install Firecracker
+        run: |
+          echo "Verifying Firecracker installation"
+          ./firecracker --version
+
+      - name: Set up test environment
+        run: |
+          # Verify all artifacts exist
+          echo "Verifying artifacts..."
+          test -f x86_64-vmlinux && echo "✓ vmlinux"
+          test -f rootfs.ext4 && echo "✓ rootfs.ext4"
+          test -f app.ext4 && echo "✓ app.ext4"
+          test -f state.ext4 && echo "✓ state.ext4"
+
+      - name: Run integration test with Firecracker
+        run: |
+          set +e
+
+          # Run firecracker with the new kernel, rootfs, and test app
+          echo "[test] starting firecracker with built components..."
+          (timeout "15s" sudo -E ./firecracker \
+            --no-api \
+            --config-file ./configs/firecracker-config.json \
+            --enable-pci)
+          FC_EXIT=$?
+          set -e
+
+          echo "[test] firecracker exited with code: $FC_EXIT"
+
+      - name: Verify test result
+        run: |
+          echo "[test] mounting state.ext4 to verify test result..."
+          mkdir -p statefs
+          sudo mount -o loop state.ext4 statefs || true
+
+          RESULT_FILE="statefs/app_state/var/app/result"
+          if [[ ! -f "$RESULT_FILE" ]]; then
+            echo "[test] FAILED: result file not found: $RESULT_FILE"
+            ls -la statefs/ || true
+            sudo umount statefs || true
+            rm -rf statefs
+            exit 1
+          fi
+
+          RESULT=$(cat "$RESULT_FILE")
+          echo "[test] result file says: '$RESULT'"
+          sudo umount statefs
+          rm -rf statefs
+
+          if [[ "$RESULT" == "PASSED" ]]; then
+            echo "[test] ✅ PASSED"
+            exit 0
+          else
+            echo "[test] ❌ FAILED"
+            exit 1
+          fi
