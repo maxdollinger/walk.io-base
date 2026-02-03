@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       firecracker-tag:
-        description: "Firecracker tag (e.g. v1.12.0, or leave empty for latest)"
+        description: "Firecracker release (e.g. v1.12.0, or leave empty for latest release)"
         required: false
         default: ""
         type: string
