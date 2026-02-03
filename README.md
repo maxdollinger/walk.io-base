@@ -1,6 +1,6 @@
 # walk.io-base
 
-Build and release vm base components for the walk.io project with a custom Linux kernel, rootfs and a firecracker binary.
+Build and release vm base components for the [walk.io](https://github.com/maxdollinger/walk.io) project with a custom Linux kernel, rootfs and a firecracker binary.
 
 ## What's Included
 
