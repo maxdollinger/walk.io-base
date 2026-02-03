@@ -110,7 +110,7 @@ jobs:
       version: ${{ steps.tag.outputs.tag }}
     steps:
       - name: Pick firecracker tag
-        id: fctag
+        id: tag
         run: |
           set -euo pipefail
           TAG="${{ inputs.firecracker-tag }}"
