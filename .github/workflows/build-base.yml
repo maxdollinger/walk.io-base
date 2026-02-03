@@ -1,46 +1,47 @@
-name: build-base
+name: Build base
 
 on:
   workflow_dispatch:
     inputs:
-      firecracker-version:
-        description: "Firecracker version (e.g. v1.14.1)"
-        required: false
-        default: "v1.14.1"
-        type: string
-      linux-tag:
-        description: "Linux kernel tag (e.g. v6.12.1, or leave empty for latest)"
+      firecracker-tag:
+        description: "Firecracker tag (e.g. v1.12.0, or leave empty for latest)"
         required: false
         default: ""
+        type: string
+      linux-tag:
+        description: "Linux kernel tag (e.g. v6.19-rc8, or leave empty for latest)"
+        required: false
+        default: ""
+        type: string
+      release-version:
+        description: "Release version (e.g. v0.1.0)"
+        required: true
         type: string
 
 permissions:
   contents: write
 
 env:
-  FC_VER: ${{ inputs.firecracker-version }}
-  LINUX_TAG: ${{ inputs.linux-tag }}
   ARCH: x86_64
 
 jobs:
   build-kernel:
     runs-on: ubuntu-24.04
     outputs:
-      kernel-tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.tag.outputs.tag }}
     steps:
       - name: Checkout repo
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd #v6
         with:
           ref: main
 
-      - name: Pick latest Linux tag
+      - name: Pick Linux tag
         id: tag
         run: |
+          TAG="${{ inputs.linux-tag }}"
           set -euo pipefail
-          if [ -z "$LINUX_TAG" ]; then
-            TAG="$(./scripts/pick-latest-tag.sh)"
-          else
-            TAG="$LINUX_TAG"
+          if [ -z "$TAG" ]; then
+            TAG="$(./scripts/pick-latest-tag.sh https://github.com/torvalds/linux.git)"
           fi
           echo "targeting kernel-release: $TAG"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
@@ -69,7 +70,7 @@ jobs:
             --jobs "$(nproc)"
 
       - name: Upload kernel artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f #v6
         with:
           name: kernel-artifacts
           path: |
@@ -81,15 +82,14 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout repo
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd #v6
         with:
           ref: main
 
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            ca-certificates curl tar util-linux e2fsprogs
+          sudo apt-get install -y e2fsprogs
 
       - name: Build rootfs.ext4
         run: |
@@ -99,60 +99,41 @@ jobs:
         run: test -f ./rootfs.ext4
 
       - name: Upload rootfs artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f #v6
         with:
           name: rootfs-artifact
           path: rootfs.ext4
 
-  build-test-app:
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Checkout repo
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
-        with:
-          ref: main
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            ca-certificates curl tar util-linux e2fsprogs
-
-      - name: Build test devices (app + state)
-        run: |
-          ./scripts/build-test-app.sh
-
-      - name: Verify test artifacts
-        run: |
-          test -f ./app.ext4
-          test -f ./state.ext4
-
-      - name: Upload test app artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-app-artifacts
-          path: |
-            app.ext4
-            state.ext4
-
   download-firecracker:
     runs-on: ubuntu-24.04
     outputs:
-      fc-binary: firecracker
+      version: ${{ steps.tag.outputs.tag }}
     steps:
+      - name: Pick firecracker tag
+        id: fctag
+        run: |
+          set -euo pipefail
+          TAG="${{ inputs.firecracker-tag }}"
+          if [ -z "$TAG" ]; then
+            TAG="$(basename $(curl -Ls -o /dev/null -w '%{url_effective}\n' https://github.com/firecracker-microvm/firecracker/releases/latest))"
+          fi
+          echo "targeting firecracker-release: $TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
       - name: Download Firecracker
         run: |
           tmp="$(mktemp -d)"
           cleanup() { rm -rf "$tmp"; }
           trap cleanup EXIT
 
-          FC_URL="https://github.com/firecracker-microvm/firecracker/releases/download/${FC_VER}/firecracker-${FC_VER}-${ARCH}.tgz"
+          VER="${{ steps.fctag.outputs.tag }}"
+          URL="https://github.com/firecracker-microvm/firecracker/releases/download/${VER}/firecracker-${VER}-${ARCH}.tgz"
 
-          echo "Downloading Firecracker ${FC_VER} from ${FC_URL}"
-          curl -fsSL -o "$tmp/fc.tgz" "$FC_URL"
+          echo "Downloading Firecracker ${VER} from ${URL}"
+          curl -fsSL -o "$tmp/fc.tgz" "$URL"
           tar -xzf "$tmp/fc.tgz" -C "$tmp"
 
-          cp "$tmp/release-${FC_VER}-${ARCH}/firecracker-${FC_VER}-${ARCH}" firecracker
+          cp "$tmp/release-${VER}-${ARCH}/firecracker-${VER}-${ARCH}" firecracker
 
 
           echo "Verifying Firecracker installation"
@@ -160,17 +141,20 @@ jobs:
           ./firecracker --version
 
       - name: Upload Firecracker artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f #v6
         with:
           name: firecracker-artifact
           path: firecracker
 
   test-integration:
     runs-on: ubuntu-24.04
-    needs: [build-kernel, build-rootfs, build-test-app, download-firecracker]
+    needs: [build-kernel, build-rootfs, download-firecracker]
+    outputs:
+      linux-ver: ${{ needs.build-kernel.outputs.version }}
+      firecracker-ver: ${{ needs.download-firecracker.outputs.version }}
     steps:
       - name: Checkout repo
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd #v6
         with:
           ref: main
 
@@ -183,41 +167,30 @@ jobs:
           sudo chmod 666 /dev/kvm || true
           ls -l /dev/kvm
 
-      - name: Install dependencies
+      - name: Build test devices (app + state)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            util-linux e2fsprogs
+          ./scripts/build-test-app.sh
 
       - name: Download kernel artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 #v7
         with:
           name: kernel-artifacts
 
       - name: Download rootfs artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 #v7
         with:
           name: rootfs-artifact
 
-      - name: Download test app artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: test-app-artifacts
-
       - name: Download Firecracker artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 #v7
         with:
           name: firecracker-artifact
 
-      - name: Install Firecracker
+      - name: Verify test deps
         run: |
-          echo "Verifying Firecracker installation"
           chmod +x firecracker
           ./firecracker --version
 
-      - name: Set up test environment
-        run: |
-          # Verify all artifacts exist
           echo "Verifying artifacts..."
           test -f x86_64-vmlinux && echo "✓ vmlinux"
           test -f rootfs.ext4 && echo "✓ rootfs.ext4"
@@ -228,7 +201,6 @@ jobs:
         run: |
           set +e
 
-          # Run firecracker with the new kernel, rootfs, and test app
           echo "[test] starting firecracker with built components..."
           (timeout "15s" sudo -E ./firecracker \
             --no-api \
@@ -259,10 +231,62 @@ jobs:
           sudo umount statefs
           rm -rf statefs
 
-          if [[ "$RESULT" == "PASSED" ]]; then
-            echo "[test] PASSED"
-            exit 0
-          else
-            echo "[test] FAILED"
-            exit 1
-          fi
+           if [[ "$RESULT" == "PASSED" ]]; then
+             echo "[test] PASSED"
+             exit 0
+           else
+             echo "[test] FAILED"
+             exit 1
+           fi
+
+  release:
+    runs-on: ubuntu-24.04
+    needs: test-integration
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd #v6
+        with:
+          ref: main
+
+      - name: Download kernel artifacts
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 #v7
+        with:
+          name: kernel-artifacts
+
+      - name: Download rootfs artifact
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 #v7
+        with:
+          name: rootfs-artifact
+
+      - name: Download Firecracker artifact
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 #v7
+        with:
+          name: firecracker-artifact
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          RELEASE_VERSION="${{ inputs.release-version }}"
+
+          cat > release-notes.txt <<EOF
+          Walk.io Base Release ${RELEASE_VERSION}
+
+          The kernel, firecracker and rootfs are guaranteed to work together.
+
+          Component Versions:
+          - Kernel: ${{ needs.test-integration.outputs.linux-ver }}
+          - Firecracker: ${{ needs.test-integration.outputs.firecracker-ver }}
+          - Architecture: ${ARCH}
+          EOF
+
+          gh release create "$RELEASE_VERSION" \
+            --title "$RELEASE_VERSION" \
+            --notes-file release-notes.txt \
+            x86_64-vmlinux \
+            x86_64-System.map \
+            x86_64.config \
+            rootfs.ext4 \
+            firecracker
