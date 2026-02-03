@@ -51,7 +51,7 @@ jobs:
           sudo apt-get install -y \
             build-essential bc bison flex \
             libelf-dev libssl-dev dwarves \
-            git jq coreutils
+            git coreutils
 
       - name: Clone Linux at tag
         run: |
@@ -156,6 +156,7 @@ jobs:
 
 
           echo "Verifying Firecracker installation"
+          chmod +x firecracker
           ./firecracker --version
 
       - name: Upload Firecracker artifact
@@ -186,7 +187,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            ca-certificates curl tar util-linux e2fsprogs
+            util-linux e2fsprogs
 
       - name: Download kernel artifacts
         uses: actions/download-artifact@v4
@@ -211,6 +212,7 @@ jobs:
       - name: Install Firecracker
         run: |
           echo "Verifying Firecracker installation"
+          chmod +x firecracker
           ./firecracker --version
 
       - name: Set up test environment
@@ -258,9 +260,9 @@ jobs:
           rm -rf statefs
 
           if [[ "$RESULT" == "PASSED" ]]; then
-            echo "[test] ✅ PASSED"
+            echo "[test] PASSED"
             exit 0
           else
-            echo "[test] ❌ FAILED"
+            echo "[test] FAILED"
             exit 1
           fi
