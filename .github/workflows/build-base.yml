@@ -126,7 +126,7 @@ jobs:
           cleanup() { rm -rf "$tmp"; }
           trap cleanup EXIT
 
-          VER="${{ steps.fctag.outputs.tag }}"
+          VER="${{ steps.tag.outputs.tag }}"
           URL="https://github.com/firecracker-microvm/firecracker/releases/download/${VER}/firecracker-${VER}-${ARCH}.tgz"
 
           echo "Downloading Firecracker ${VER} from ${URL}"
