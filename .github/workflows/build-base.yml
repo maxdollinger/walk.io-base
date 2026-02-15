@@ -263,6 +263,10 @@ jobs:
         with:
           name: firecracker-artifact
 
+      - name: Create release archive
+        run: |
+          tar cf "${ARCH}-release.tar" firecracker rootfs.ext4 x86_64-vmlinux
+
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -285,8 +289,6 @@ jobs:
           gh release create "$RELEASE_VERSION" \
             --title "$RELEASE_VERSION" \
             --notes-file release-notes.txt \
-            x86_64-vmlinux \
+            "${ARCH}-release.tar" \
             x86_64-System.map \
             x86_64.config \
-            rootfs.ext4 \
-            firecracker
