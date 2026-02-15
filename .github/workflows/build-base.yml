@@ -243,6 +243,11 @@ jobs:
     runs-on: ubuntu-24.04
     needs: test-integration
     steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zstd
+
       - name: Checkout repo
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd #v6
         with:
@@ -265,7 +270,8 @@ jobs:
 
       - name: Create release archive
         run: |
-          tar cf "${ARCH}-release.tar" firecracker rootfs.ext4 x86_64-vmlinux
+          mv x86_64-vmlinux vmlinux
+          tar --zstd cf "${ARCH}.tar.zst" firecracker rootfs.ext4 vmlinux
 
       - name: Create GitHub Release
         env:
@@ -289,6 +295,6 @@ jobs:
           gh release create "$RELEASE_VERSION" \
             --title "$RELEASE_VERSION" \
             --notes-file release-notes.txt \
-            "${ARCH}-release.tar" \
+            "${ARCH}.tar" \
             x86_64-System.map \
             x86_64.config \
