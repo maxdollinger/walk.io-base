@@ -3,34 +3,42 @@ set -eu
 
 BB=/walkio/busybox
 
-$BB echo "Starting init process ..."
+$BB echo "[walkio] init"
 
 # --- minimal dev/proc/sys so we can mount things ---
-$BB echo "mounting proc ..."
+$BB echo "[walkio] mounting devices ..."
+$BB echo "... proc"
 $BB mount -t proc proc /proc
 
-$BB echo "mounting sysfs ..."
+$BB echo "... sysfs"
 $BB mount -t sysfs sysfs /sys
 
 # devtmpfs gives you /dev/vda /dev/vdb etc.2
 # If devtmpfs fails on your kernel, you can fall back to mdev, but devtmpfs is ideal
 
-$BB echo "mounting devtmpfs ..."
+$BB echo "... tmpfs"
 $BB mount -t devtmpfs devtmpfs /dev || true
 
-$BB echo "mounting dev/pts ..."
+$BB echo "... pts"
 $BB mkdir -p /dev/pts
 $BB mount -t devpts devpts /dev/pts || true
 
 # --- mount the base root (vda) read-only at /mnt/lower ---
 # IMPORTANT: even though the kernel booted from vda as /, we remount the *block device* at /mnt/lower
 # so overlay has a clean lowerdir.
+
+$BB echo "... root"
 $BB mount -t ext4 -o ro /dev/vda /mnt/root
+
+$BB echo "... app"
 $BB mount -t ext4 -o ro /dev/vdb /mnt/app
 
 # --- mount the state disk (vdb) read-write at /mnt/state ---
+$BB echo "... state"
 $BB mount -t ext4 -o rw /dev/vdc /mnt/state
 
+$BB echo "[walkio] finished mounting devices"
+$BB echo "[walkio] creating overlay fs"
 # Prepare overlay upper/work dirs (must be on same fs: /mnt/state)
 $BB mkdir -p /mnt/state/app_state /mnt/state/overlay_work
 
@@ -48,12 +56,14 @@ $BB mkdir -p /mnt/newroot/proc /mnt/newroot/sys /mnt/newroot/dev /mnt/newroot/ru
 # A place to put the old root after pivot
 $BB mkdir -p /mnt/newroot/.oldroot
 
+$BB echo "[walkio] pivoting root"
 # --- pivot_root into the overlay root ---
 $BB pivot_root /mnt/newroot /mnt/newroot/.oldroot
 
 # Now we're running with / = overlay merged root.
 
 # Re-mount the standard virtual filesystems on the new root
+$BB echo "[walkio] re-mounting devices"
 $BB mount -t proc proc /proc
 $BB mount -t sysfs sysfs /sys
 $BB mount -t devtmpfs devtmpfs /dev || true
@@ -68,12 +78,13 @@ $BB mount -t tmpfs -o mode=0755 tmpfs /run
 $BB mount -t tmpfs -o mode=1777 tmpfs /tmp
 
 # Clean up old root mounts (best effort)
+$BB echo "[walkio] unmounting old mounts"
 $BB umount -l /.oldroot/proc 2>/dev/null || true
 $BB umount -l /.oldroot/sys 2>/dev/null || true
 $BB umount -l /.oldroot/dev 2>/dev/null || true
 
 # Keep mounts to inspect later if you want; otherwise:
-$BB umount -l /.oldroot/mnt/lower || true
+$BB umount -l /.oldroot/mnt/app || true
 $BB umount -l /.oldroot/mnt/state || true
 
 # Networking (disabled for now)
@@ -116,41 +127,53 @@ shutdown() {
     $BB reboot -f
 }
 
-# --- pick what to run (injected from the app overlay) ---
-# Read argv (newline-delimited) and exec
-if [ -f /walkio/argv ]; then
-    # Build "$@" from file lines
-    set --
-    while IFS= read -r line; do
-        [ -n "$line" ] || continue
-        set -- "$@" "$line"
-    done </walkio/argv
+$BB echo "[walkio] initializing app"
 
-    # Load env (optional)
-    if [ -f /walkio/env ]; then
-        # export each KEY=VALUE line
-        while IFS= read -r kv; do
-            [ -n "$kv" ] || continue
-            export "$kv"
-        done </walkio/env
-    fi
-
-    cd $WORKDIR
-
-    $BB echo "[walkio] starting app" >/dev/ttyS0
-
-    trap shutdown INT TERM
-
-    "$@" &
-    APP_PID=$!
-    $BB echo "[walkio] app started with PID: $APP_PID" >/dev/ttyS0
-
-    wait "$APP_PID"
-    STATUS=$?
-
-    $BB echo "[walkio] app exited with status $STATUS" >/dev/ttyS0
-
-    # Clean shutdown of VM
-    $BB reboot
-
+if [ ! -f /walkio/env ]; then
+    $BB echo "[walkio] ERROR: /walkio/env not found" >&2
+    exit 1
 fi
+
+if [ ! -s /walkio/argv ]; then
+    $BB echo "[walkio] ERROR: /walkio/argv not found or empty" >&2
+    exit 1
+fi
+
+# source env file and export all env vars
+$BB echo "[walkio] sourcing env"
+set -a
+. /walkio/env
+set +a
+
+# make sure WORKDIR is set
+if [ -z "${WORKDIR:-}" ]; then
+    $BB echo "[walkio] WARN: WORKDIR not set; default to /"
+    WORKDIR="/"
+    export WORKDIR
+fi
+
+# Build "$@" from file lines
+$BB echo "[walkio] building start command"
+set --
+while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    set -- "$@" "$line"
+done </walkio/argv
+
+cd "$WORKDIR"
+
+$BB echo "[walkio] starting app" >/dev/ttyS0
+
+trap shutdown INT TERM
+
+"$@" &
+APP_PID=$!
+$BB echo "[walkio] app started with PID: $APP_PID" >/dev/ttyS0
+
+wait "$APP_PID"
+STATUS=$?
+
+$BB echo "[walkio] app exited with status $STATUS" >/dev/ttyS0
+
+# Clean shutdown of VM
+$BB reboot
